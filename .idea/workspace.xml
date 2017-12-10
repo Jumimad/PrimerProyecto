@@ -69,6 +69,11 @@
               <item name="PrimerProyecto" type="b2602c69:ProjectViewProjectNode" />
               <item name="PrimerProyecto" type="2a2b976b:PhpTreeStructureProvider$1" />
             </path>
+            <path>
+              <item name="PrimerProyecto" type="b2602c69:ProjectViewProjectNode" />
+              <item name="PrimerProyecto" type="2a2b976b:PhpTreeStructureProvider$1" />
+              <item name="Documentacion" type="2a2b976b:PhpTreeStructureProvider$1" />
+            </path>
           </expand>
           <select />
         </subPane>
@@ -111,12 +116,12 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1512928345833</updated>
-      <workItem from="1512928348451" duration="1211000" />
+      <workItem from="1512928348451" duration="1335000" />
     </task>
     <servers />
   </component>
   <component name="TimeTrackingManager">
-    <option name="totallyTimeSpent" value="1211000" />
+    <option name="totallyTimeSpent" value="1335000" />
   </component>
   <component name="ToolWindowManager">
     <frame x="426" y="40" width="1400" height="990" extended-state="0" />
