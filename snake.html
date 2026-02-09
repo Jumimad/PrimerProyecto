@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake Game AI</title>
+    <link rel="stylesheet" href="snake_style.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="score">Puntuación: 0</div>
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+
+        const gridSize = 20;
+        const tileCount = canvas.width / gridSize;
+
+        let score = 0;
+        let snake = [];
+        let food = {x: 15, y: 15};
+        let dx = 0;
+        let dy = 0;
+        let gameSpeed = 50; // Faster for AI
+        let lastTime = 0;
+        let gameRunning = true;
+        let animationFrameId;
+
+        // Directions
+        const UP = {x: 0, y: -1};
+        const DOWN = {x: 0, y: 1};
+        const LEFT = {x: -1, y: 0};
+        const RIGHT = {x: 1, y: 0};
+
+        function initGame() {
+            snake = [{x: 10, y: 10}, {x: 10, y: 11}, {x: 10, y: 12}]; // Start with length 3
+            score = 0;
+            dx = 0;
+            dy = -1; // Moving up initially
+            placeFood();
+            gameRunning = true;
+            window.requestAnimationFrame(main);
+        }
+
+        function main(currentTime) {
+            if (!gameRunning) return;
+
+            animationFrameId = window.requestAnimationFrame(main);
+            const secondsSinceLastRender = (currentTime - lastTime) / 1000;
+            if (secondsSinceLastRender < gameSpeed / 1000) return;
+
+            lastTime = currentTime;
+            update();
+            draw();
+        }
+
+        function update() {
+            // AI Logic to determine direction
+            const nextMove = getBestMove();
+            if (nextMove) {
+                dx = nextMove.x;
+                dy = nextMove.y;
+            }
+
+            const head = {x: snake[0].x + dx, y: snake[0].y + dy};
+
+            // Check collision with walls
+            if (head.x < 0 || head.x >= tileCount || head.y < 0 || head.y >= tileCount) {
+                resetGame();
+                return;
+            }
+
+            // Check collision with self
+            for (let i = 0; i < snake.length; i++) {
+                if (head.x === snake[i].x && head.y === snake[i].y) {
+                    resetGame();
+                    return;
+                }
+            }
+
+            snake.unshift(head);
+
+            // Check collision with food
+            if (head.x === food.x && head.y === food.y) {
+                score++;
+                scoreElement.innerText = 'Puntuación: ' + score;
+                placeFood();
+            } else {
+                snake.pop();
+            }
+        }
+
+        function draw() {
+            // Clear canvas
+            ctx.fillStyle = '#34495e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw food
+            ctx.fillStyle = '#e74c3c';
+            ctx.fillRect(food.x * gridSize, food.y * gridSize, gridSize - 2, gridSize - 2);
+
+            // Draw snake
+            for (let i = 0; i < snake.length; i++) {
+                // Head is slightly different color
+                if (i === 0) ctx.fillStyle = '#2ecc71';
+                else ctx.fillStyle = '#27ae60';
+
+                ctx.fillRect(snake[i].x * gridSize, snake[i].y * gridSize, gridSize - 2, gridSize - 2);
+            }
+        }
+
+        function placeFood() {
+            let validPosition = false;
+            while (!validPosition) {
+                food.x = Math.floor(Math.random() * tileCount);
+                food.y = Math.floor(Math.random() * tileCount);
+
+                validPosition = true;
+                for (let segment of snake) {
+                    if (segment.x === food.x && segment.y === food.y) {
+                        validPosition = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        function resetGame() {
+            gameRunning = false;
+            window.cancelAnimationFrame(animationFrameId);
+            alert("Game Over! Score: " + score);
+            initGame();
+        }
+
+        // --- AI LOGIC ---
+
+        function getBestMove() {
+            const head = snake[0];
+            const moves = [UP, DOWN, LEFT, RIGHT];
+
+            // Filter safe moves (not immediate death)
+            const safeMoves = moves.filter(move => isSafe(move));
+
+            if (safeMoves.length === 0) return null; // No hope
+
+            // 1. Try to find path to food using BFS
+            const pathToFood = bfs(head, food);
+
+            if (pathToFood && pathToFood.length > 0) {
+                const firstStep = pathToFood[0];
+                const nextPos = {x: head.x + firstStep.x, y: head.y + firstStep.y};
+
+                // If path found, ensure it's safe (doesn't lead to a trap)
+                // We simulate taking the first step and check if we can reach the tail.
+                if (canReachTail(nextPos)) {
+                    return firstStep;
+                }
+            }
+
+            // 2. Fallback: If no path to food or path is unsafe, follow the tail.
+            // We want to move to a neighbor that allows reaching the tail (chasing it).
+            // We prioritize the move that maximizes reachable space if multiple can reach tail?
+            // Or simply pick the one that is furthest from food?
+
+            // Let's pick the move that maximizes reachable space (flood fill)
+            // This is the most robust fallback.
+
+            let bestMove = null;
+            let maxSpace = -1;
+
+            for (let move of safeMoves) {
+                const nextPos = {x: head.x + move.x, y: head.y + move.y};
+                const space = countReachable(nextPos);
+                if (space > maxSpace) {
+                    maxSpace = space;
+                    bestMove = move;
+                }
+            }
+
+            return bestMove || safeMoves[0];
+        }
+
+        function isSafe(move) {
+            const head = snake[0];
+            const nextX = head.x + move.x;
+            const nextY = head.y + move.y;
+
+            // Wall collision
+            if (nextX < 0 || nextX >= tileCount || nextY < 0 || nextY >= tileCount) return false;
+
+            // Self collision
+            for (let i = 0; i < snake.length - 1; i++) {
+                if (nextX === snake[i].x && nextY === snake[i].y) return false;
+            }
+            return true;
+        }
+
+        // Returns array of moves (directions) to reach target, or null if no path
+        function bfs(start, target, ignoreTail = false) {
+            const queue = [];
+            queue.push({pos: start, path: []});
+
+            const visited = new Set();
+            visited.add(start.x + ',' + start.y);
+
+            while (queue.length > 0) {
+                const {pos, path} = queue.shift();
+
+                if (pos.x === target.x && pos.y === target.y) {
+                    return path;
+                }
+
+                const moves = [UP, DOWN, LEFT, RIGHT];
+                for (let move of moves) {
+                    const nextX = pos.x + move.x;
+                    const nextY = pos.y + move.y;
+
+                    // Check bounds
+                    if (nextX < 0 || nextX >= tileCount || nextY < 0 || nextY >= tileCount) continue;
+
+                    // Check collision with snake body
+                    let collision = false;
+                    const limit = ignoreTail ? snake.length - 1 : snake.length;
+                    for (let i = 0; i < limit; i++) {
+                        if (nextX === snake[i].x && nextY === snake[i].y) {
+                            collision = true;
+                            break;
+                        }
+                    }
+                    if (collision) continue;
+
+                    if (!visited.has(nextX + ',' + nextY)) {
+                        visited.add(nextX + ',' + nextY);
+                        queue.push({
+                            pos: {x: nextX, y: nextY},
+                            path: [...path, move]
+                        });
+                    }
+                }
+            }
+            return null;
+        }
+
+        function countReachable(startPos) {
+            const queue = [startPos];
+            const visited = new Set();
+            visited.add(startPos.x + ',' + startPos.y);
+            let count = 0;
+
+            while (queue.length > 0) {
+                const current = queue.shift();
+                count++;
+
+                const moves = [UP, DOWN, LEFT, RIGHT];
+                for (let move of moves) {
+                    const nextX = current.x + move.x;
+                    const nextY = current.y + move.y;
+
+                    // Check bounds
+                    if (nextX < 0 || nextX >= tileCount || nextY < 0 || nextY >= tileCount) continue;
+
+                    // Check collision with snake body
+                    let collision = false;
+                    for (let segment of snake) {
+                        if (nextX === segment.x && nextY === segment.y) {
+                            collision = true;
+                            break;
+                        }
+                    }
+                    if (collision) continue;
+
+                    if (!visited.has(nextX + ',' + nextY)) {
+                        visited.add(nextX + ',' + nextY);
+                        queue.push({x: nextX, y: nextY});
+                    }
+                }
+            }
+            return count;
+        }
+
+        function canReachTail(startPos) {
+            const tail = snake[snake.length - 1];
+            // Use BFS to check reachability to tail, ignoring the tail segment itself as obstacle
+            return bfs(startPos, tail, true) !== null;
+        }
+
+        // Initialize
+        initGame();
+
+    </script>
+</body>
+</html>
