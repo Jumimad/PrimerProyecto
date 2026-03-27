@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Snake AI - Final Pro</title>
+    <link rel="stylesheet" href="snake_style.css">
+    <style>
+        @keyframes pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.5); color: #ffeb3b; }
+            100% { transform: scale(1); }
+        }
+        .pop-effect { animation: pop 0.2s ease-out; }
+
+        @keyframes shake {
+            0% { transform: translate(1px, 1px); }
+            25% { transform: translate(-2px, -2px); }
+            50% { transform: translate(2px, 2px); }
+            75% { transform: translate(-1px, 1px); }
+            100% { transform: translate(1px, -1px); }
+        }
+        .shake-screen { animation: shake 0.4s; }
+    </style>
+</head>
+<body>
+
+<div id="top-hud">
+    <div class="stat-panel">
+        <div class="stat-label">PUNTUACIÓN</div>
+        <div class="stat-value" id="score-el">0</div>
+    </div>
+    <div class="stat-panel" style="border-color: #FFD700; box-shadow: 0 0 15px #FFD700;">
+        <div class="stat-label">VICTORIAS</div>
+        <div class="stat-value" id="wins-el" style="color: #FFD700;">0</div>
+    </div>
+</div>
+
+<div id="game-wrapper">
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="game-over-screen" class="overlay-screen">
+        <div class="go-title">FALLO</div>
+        <div class="subtitle">SISTEMA COMPROMETIDO</div>
+    </div>
+
+    <div id="victory-screen" class="overlay-screen">
+        <div class="vic-title">¡VICTORIA!</div>
+        <div class="subtitle">DOMINIO TOTAL</div>
+    </div>
+</div>
+
+<script>
+    const CONFIG = {
+        TILE_SIZE: 40,
+        COLS: 20,
+        ROWS: 15,
+        BASE_SPEED: 90,
+        COLORS: {
+            BODY: '#7B00FF',
+            HEAD: '#C45CFF',
+            SHADOW: '#9D00FF',
+            EYES: '#FFFFFF',
+            GOLD: '#FFD700',
+            POISON: '#800080'
+        },
+        STUCK_THRESHOLD: 100
+    };
+
+    const TOTAL_CELLS = CONFIG.COLS * CONFIG.ROWS;
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const wrapper = document.getElementById('game-wrapper');
+
+    canvas.width = CONFIG.COLS * CONFIG.TILE_SIZE;
+    canvas.height = CONFIG.ROWS * CONFIG.TILE_SIZE;
+
+    ctx.font = `${CONFIG.TILE_SIZE}px sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+
+    const audioFiles = {
+        eat: new Audio('sounds/eat.mp3'),
+        bomb: new Audio('sounds/bomb.mp3'),
+        loss: new Audio('sounds/loss.mp3'),
+        magic: new Audio('sounds/eat.mp3')
+    };
+    audioFiles.eat.volume = 1.0;
+    audioFiles.bomb.volume = 0.6;
+    audioFiles.loss.volume = 0.8;
+    audioFiles.magic.playbackRate = 1.5;
+
+    const SoundFX = {
+        eat: () => { audioFiles.eat.currentTime = 0; audioFiles.eat.play().catch(()=>{}); },
+        special: () => { audioFiles.magic.currentTime = 0; audioFiles.magic.play().catch(()=>{}); },
+        bombAlert: () => { audioFiles.bomb.currentTime = 0; audioFiles.bomb.play().catch(()=>{}); },
+        gameOver: () => { audioFiles.loss.currentTime = 0; audioFiles.loss.play().catch(()=>{}); }
+    };
+
+    let state = {
+        snake: [],
+        food: [],
+        bombs: [],
+        score: 0,
+        wins: 0,
+        isGameOver: false,
+        movesSinceLastMeal: 0,
+        nextBombTime: 0
+    };
+
+    function getDistance(a, b) {
+        return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+    }
+
+    function getGridState(snake, ignoreTail = false) {
+        const grid = new Int8Array(CONFIG.COLS * CONFIG.ROWS).fill(0);
+        // Mark snake body
+        const limit = ignoreTail ? snake.length - 1 : snake.length;
+        for(let i=0; i<limit; i++) grid[snake[i].y * CONFIG.COLS + snake[i].x] = 1;
+        // Mark bombs
+        for(let b of state.bombs) grid[b.y * CONFIG.COLS + b.x] = 1;
+        return grid;
+    }
+
+    // BFS Pathfinding (Shortest Path)
+    function getPath(start, target, grid) {
+        const queue = [{ pos: start, path: [] }];
+        const visited = new Set([`${start.x},${start.y}`]);
+        let iterations = 0;
+
+        while (queue.length > 0 && iterations < 5000) {
+            iterations++;
+            const current = queue.shift();
+            const head = current.pos;
+
+            if (head.x === target.x && head.y === target.y) return current.path;
+
+            const moves = [{x:0, y:-1}, {x:0, y:1}, {x:-1, y:0}, {x:1, y:0}];
+            for (const m of moves) {
+                const nx = head.x + m.x, ny = head.y + m.y;
+                if (nx >= 0 && nx < CONFIG.COLS && ny >= 0 && ny < CONFIG.ROWS) {
+                    const idx = ny * CONFIG.COLS + nx;
+                    // Allow moving to target even if marked (e.g. tail chasing)
+                    const isTarget = (nx === target.x && ny === target.y);
+                    if ((grid[idx] === 0 || isTarget) && !visited.has(`${nx},${ny}`)) {
+                        visited.add(`${nx},${ny}`);
+                        queue.push({ pos: {x: nx, y: ny}, path: [...current.path, m] });
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    // Flood Fill (Area Size)
+    function getAreaSize(start, grid) {
+        let count = 0;
+        const queue = [start];
+        const visited = new Set([`${start.x},${start.y}`]);
+        const maxCheck = TOTAL_CELLS;
+
+        while(queue.length > 0) {
+            const curr = queue.shift();
+            count++;
+            if (count >= maxCheck) return count;
+
+            const moves = [{x:0, y:-1}, {x:0, y:1}, {x:-1, y:0}, {x:1, y:0}];
+            for(const m of moves) {
+                const nx = curr.x + m.x, ny = curr.y + m.y;
+                const idx = ny * CONFIG.COLS + nx;
+                if(nx >= 0 && nx < CONFIG.COLS && ny >= 0 && ny < CONFIG.ROWS && grid[idx] === 0 && !visited.has(`${nx},${ny}`)) {
+                    visited.add(`${nx},${ny}`);
+                    queue.push({x: nx, y: ny});
+                }
+            }
+        }
+        return count;
+    }
+
+    function aiThink() {
+        const head = state.snake[0];
+        const tail = state.snake[state.snake.length - 1];
+
+        if (state.food.length === 0) spawn('FOOD', 1);
+
+        // 1. Identify best food target
+        let target = getBestFoodTarget(head);
+
+        // 2. Try to find path to food
+        // We ignore the tail for the grid because it will move away (unless we eat)
+        const gridIgnoreTail = getGridState(state.snake, true);
+        const pathToFood = getPath(head, target, gridIgnoreTail);
+
+        if (pathToFood && pathToFood.length > 0) {
+            const move = pathToFood[0];
+            const nextPos = { x: head.x + move.x, y: head.y + move.y };
+
+            // Safety Check: Can we reach the tail after this move?
+            // Determine if we are eating
+            const eating = (target.x === nextPos.x && target.y === nextPos.y);
+
+            // Construct virtual snake
+            let virtualSnake = [nextPos, ...state.snake];
+            if (!eating) virtualSnake.pop(); // Tail moves if not eating
+
+            const virtualTail = virtualSnake[virtualSnake.length - 1];
+            const virtualGrid = getGridState(virtualSnake, false); // Strict check
+
+            // If we can reach our own tail from the new head, it's a safe move
+            if (getPath(nextPos, virtualTail, virtualGrid)) {
+                return move;
+            }
+            // If not, we might get trapped. Fall through to tail chasing.
+        }
+
+        // 3. Fallback: Chase Tail
+        // If no safe path to food, follow the tail to stall safely.
+        // We target the current tail position.
+        // Use grid where tail is considered an obstacle? No, we want to go TO it.
+        // But getPath handles target as walkable.
+        // We use gridIgnoreTail because the tail IS the target and will move.
+        const pathToTail = getPath(head, tail, gridIgnoreTail);
+
+        if (pathToTail && pathToTail.length > 0) {
+            return pathToTail[0];
+        }
+
+        // 4. Emergency: Maximize Space
+        return getSafeFallbackMove(head);
+    }
+
+    function getBestFoodTarget(head) {
+        // Simple heuristic: Closest food, prioritize Gold, avoid Poison
+        let best = null;
+        let minScore = Infinity;
+        const wantsPoison = state.snake.length > (TOTAL_CELLS * 0.7);
+
+        for (let f of state.food) {
+            if (f.type === 'POISON' && !wantsPoison) continue;
+
+            let dist = getDistance(head, f);
+            let score = dist;
+
+            if (f.type === 'GOLD') score -= 20; // Highly desirable
+            if (f.type === 'POISON') score += 50;
+
+            if (score < minScore) {
+                minScore = score;
+                best = f;
+            }
+        }
+        return best || state.food[0];
+    }
+
+    function getSafeFallbackMove(head) {
+        const moves = [{x:0, y:-1}, {x:0, y:1}, {x:-1, y:0}, {x:1, y:0}];
+        let bestMove = null;
+        let maxSpace = -1;
+        const grid = getGridState(state.snake, true); // Ignore tail
+
+        for (const m of moves) {
+            const nx = head.x + m.x, ny = head.y + m.y;
+            const idx = ny * CONFIG.COLS + nx;
+
+            if (nx < 0 || nx >= CONFIG.COLS || ny < 0 || ny >= CONFIG.ROWS) continue;
+            if (grid[idx] === 1) continue;
+
+            const space = getAreaSize({x:nx, y:ny}, grid);
+            if (space > maxSpace) {
+                maxSpace = space;
+                bestMove = m;
+            }
+        }
+
+        // Last resort: just pick any valid move
+        if (!bestMove) {
+             for (const m of moves) {
+                const nx = head.x + m.x, ny = head.y + m.y;
+                const idx = ny * CONFIG.COLS + nx;
+                if (nx >= 0 && nx < CONFIG.COLS && ny >= 0 && ny < CONFIG.ROWS && grid[idx] === 0) {
+                    return m;
+                }
+             }
+        }
+
+        return bestMove;
+    }
+
+    function isReachable(x, y) {
+        const head = state.snake[0];
+        const grid = getGridState(state.snake, true);
+        return getPath(head, {x, y}, grid) !== null;
+    }
+
+    function spawn(type, count, duration) {
+        let attempts = 0;
+        if (type === 'BOMB') { SoundFX.bombAlert(); wrapper.classList.add('shake-screen'); setTimeout(()=>wrapper.classList.remove('shake-screen'), 500); }
+
+        for (let i = 0; i < count; i++) {
+            let x, y, valid = false;
+            while (!valid && attempts < 100) {
+                x = Math.floor(Math.random() * CONFIG.COLS);
+                y = Math.floor(Math.random() * CONFIG.ROWS);
+
+                const busy = state.snake.some(s => s.x === x && s.y === y) ||
+                    state.bombs.some(b => b.x === x && b.y === y) ||
+                    state.food.some(f => f.x === x && f.y === y);
+
+                if (!busy && isReachable(x, y)) valid = true;
+                attempts++;
+            }
+
+            if (valid) {
+                let fType = 'NORMAL';
+                if (type === 'FOOD') {
+                    const r = Math.random();
+                    if (r < 0.05) fType = 'GOLD';
+                    else if (r < 0.10) fType = 'POISON';
+                } else fType = 'BOMB';
+
+                const item = { x, y, type: fType, expires: duration ? Date.now() + duration : null };
+                if (type === 'FOOD') state.food.push(item);
+                if (type === 'BOMB') state.bombs.push(item);
+            }
+        }
+    }
+
+    let lastTime = 0;
+    let dropCounter = 0;
+
+    function initGame() {
+        state.isGameOver = false;
+        document.getElementById('game-over-screen').classList.remove('visible');
+        document.getElementById('victory-screen').classList.remove('visible');
+        wrapper.classList.remove('shake-screen');
+
+        const cx = Math.floor(CONFIG.COLS / 2);
+        const cy = Math.floor(CONFIG.ROWS / 2);
+
+        state.snake = [{x: cx, y: cy}, {x: cx, y: cy+1}, {x: cx, y: cy+2}];
+        state.score = 0;
+        state.food = [];
+        state.bombs = [];
+        state.movesSinceLastMeal = 0;
+        state.nextBombTime = Date.now() + 5000;
+
+        updateUI();
+        spawn('FOOD', 1);
+
+        lastTime = 0;
+        dropCounter = 0;
+        requestAnimationFrame(gameLoop);
+    }
+
+    function gameLoop(time = 0) {
+        if (state.isGameOver) return;
+
+        const deltaTime = time - lastTime;
+        lastTime = time;
+        dropCounter += deltaTime;
+
+        let currentSpeed = CONFIG.BASE_SPEED;
+        if (state.snake.length > 50) currentSpeed = 80;
+        if (state.snake.length > 100) currentSpeed = 70;
+
+        if (dropCounter > currentSpeed) {
+            update();
+            dropCounter = 0;
+        }
+
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function update() {
+        if (Date.now() > state.nextBombTime) {
+            spawn('BOMB', 1, 6000);
+            state.nextBombTime = Date.now() + (Math.random() * 10000 + 8000);
+        }
+
+        const now = Date.now();
+        state.bombs = state.bombs.filter(b => !b.expires || b.expires > now);
+
+        const nextMove = aiThink();
+
+        if (!nextMove) {
+            triggerGameOver();
+            return;
+        }
+
+        const head = state.snake[0];
+        const newHead = { x: head.x + nextMove.x, y: head.y + nextMove.y };
+
+        // **COLLISION DETECTION (Game Over Logic)**
+
+        // 1. Wall Collision
+        if (newHead.x < 0 || newHead.x >= CONFIG.COLS || newHead.y < 0 || newHead.y >= CONFIG.ROWS) {
+            triggerGameOver();
+            return;
+        }
+
+        // 2. Self Collision
+        const aboutToEat = state.food.some(f => f.x === newHead.x && f.y === newHead.y);
+
+        const collisionWithBody = state.snake.some((segment, index) => {
+            // If we are not eating, ignore the last segment (tail)
+            if (!aboutToEat && index === state.snake.length - 1) return false;
+            return segment.x === newHead.x && segment.y === newHead.y;
+        });
+
+        if (collisionWithBody) {
+            triggerGameOver();
+            return;
+        }
+
+        // 3. Bomb Collision
+        if (state.bombs.some(b => b.x === newHead.x && b.y === newHead.y)) {
+            triggerGameOver();
+            return;
+        }
+
+        // --- Move Snake ---
+        state.snake.unshift(newHead);
+        state.movesSinceLastMeal++;
+
+        if (state.movesSinceLastMeal > CONFIG.STUCK_THRESHOLD) {
+            state.food = [];
+            spawn('FOOD', 1);
+            state.movesSinceLastMeal = 0;
+        }
+
+        const foodIdx = state.food.findIndex(f => f.x === newHead.x && f.y === newHead.y);
+
+        if (foodIdx !== -1) {
+            const item = state.food[foodIdx];
+            state.food.splice(foodIdx, 1);
+            state.movesSinceLastMeal = 0;
+
+            if (item.type === 'GOLD') {
+                state.score += 50;
+                SoundFX.special();
+            } else if (item.type === 'POISON') {
+                state.score = Math.max(0, state.score - 20);
+                SoundFX.special();
+                for(let k=0; k<3; k++) if(state.snake.length > 3) state.snake.pop();
+                state.snake.pop();
+            } else {
+                state.score += 10;
+                SoundFX.eat();
+            }
+
+            const sc = document.getElementById('score-el');
+            sc.classList.remove('pop-effect');
+            void sc.offsetWidth;
+            sc.classList.add('pop-effect');
+
+            updateUI();
+
+            if (state.snake.length >= TOTAL_CELLS * 0.95) {
+                state.wins++;
+                updateUI();
+                document.getElementById('victory-screen').classList.add('visible');
+                state.isGameOver = true;
+                setTimeout(initGame, 6000);
+            }
+        } else {
+            state.snake.pop();
+        }
+    }
+
+    function triggerGameOver() {
+        if (state.isGameOver) return; // Evitar doble trigger
+        state.isGameOver = true;
+        SoundFX.gameOver();
+        document.getElementById('game-over-screen').classList.add('visible');
+        setTimeout(initGame, 3000);
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Food
+        state.food.forEach(f => {
+            const x = f.x * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const y = f.y * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2 + 2;
+            ctx.shadowBlur = 15;
+            if (f.type === 'GOLD') {
+                ctx.shadowColor = CONFIG.COLORS.GOLD;
+                ctx.fillText("🌟", x, y);
+            } else if (f.type === 'POISON') {
+                ctx.shadowColor = CONFIG.COLORS.POISON;
+                ctx.fillText("🍇", x, y);
+            } else {
+                ctx.shadowColor = 'red';
+                ctx.fillText("🍎", x, y);
+            }
+            ctx.shadowBlur = 0;
+        });
+
+        // Bombs
+        state.bombs.forEach(b => {
+            const x = b.x * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const y = b.y * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2 + 2;
+            ctx.shadowBlur = 10; ctx.shadowColor = 'yellow';
+            ctx.fillText("💣", x, y);
+            ctx.shadowBlur = 0;
+        });
+
+        // Snake
+        if (state.snake.length > 0) {
+            ctx.lineCap = "round"; ctx.lineJoin = "round";
+            ctx.shadowBlur = 20; ctx.shadowColor = CONFIG.COLORS.SHADOW;
+            ctx.lineWidth = CONFIG.TILE_SIZE - 8; ctx.strokeStyle = CONFIG.COLORS.BODY;
+
+            ctx.beginPath();
+            ctx.moveTo(state.snake[0].x * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE/2, state.snake[0].y * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE/2);
+            for (let i = 1; i < state.snake.length; i++) {
+                ctx.lineTo(state.snake[i].x * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE/2, state.snake[i].y * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE/2);
+            }
+            ctx.stroke(); ctx.shadowBlur = 0;
+
+            const hx = state.snake[0].x * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const hy = state.snake[0].y * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            let dx = 0, dy = -1;
+            if (state.snake.length > 1) {
+                dx = state.snake[0].x - state.snake[1].x;
+                dy = state.snake[0].y - state.snake[1].y;
+            }
+            ctx.save(); ctx.translate(hx, hy);
+            if (dx === 1) ctx.rotate(Math.PI / 2);
+            else if (dx === -1) ctx.rotate(-Math.PI / 2);
+            else if (dy === 1) ctx.rotate(Math.PI);
+
+            ctx.shadowBlur = 15; ctx.shadowColor = CONFIG.COLORS.HEAD;
+            ctx.fillStyle = CONFIG.COLORS.HEAD;
+            ctx.beginPath(); ctx.ellipse(0, -12, 16, 22, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0; ctx.fillStyle = CONFIG.COLORS.EYES;
+            ctx.beginPath(); ctx.arc(-7, -8, 4, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(7, -8, 4, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    function updateUI() {
+        document.getElementById('score-el').innerText = state.score;
+        document.getElementById('wins-el').innerText = state.wins;
+    }
+
+    function connectWS() {
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(wsProtocol + '//' + location.host);
+        ws.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                const data = msg.data || msg;
+                if (msg.type === 'SNAKE_ACTION' || msg.type === 'snake-test-command') {
+                    if (data.action === 'SPAWN_FOOD') spawn('FOOD', data.count || 1);
+                    if (data.action === 'SPAWN_BOMB') spawn('BOMB', data.count || 1, data.duration || 5000);
+                    if (data.action === 'RESET_GAME') initGame();
+                }
+            } catch(e){}
+        };
+        ws.onclose = () => setTimeout(connectWS, 3000);
+    }
+
+    document.body.addEventListener('click', () => {
+        const s = new Audio(); s.play().catch(()=>{});
+    }, { once: true });
+
+    initGame();
+    connectWS();
+
+</script>
+</body>
+</html>
